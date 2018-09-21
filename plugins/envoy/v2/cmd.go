@@ -19,7 +19,11 @@ package v2
 import (
 	"errors"
 	"fmt"
+	"github.com/turbinelabs/codec"
+	"github.com/turbinelabs/nonstdlib/flag/usage"
 	"github.com/turbinelabs/rotor/xds/collector"
+	"log"
+	"os"
 	"strings"
 
 	"github.com/turbinelabs/api"
@@ -39,6 +43,33 @@ results to resolve corresponding instances statically or via configured v2 EDS o
  v1 SDS servers that are provided in CDS results.
 `
 
+type Bin struct {
+	BinId string	`json:"binid"`
+	Host string		`json:"host"`
+	Port int		`json:"port"`
+}
+
+func (b *Bin) Addr() string {
+	return fmt.Sprintf("%s:%d", b.Host, b.Port)
+}
+
+type Bins []Bin
+
+func readConfig(filePath string) Bins {
+	codec := codec.NewYaml()
+
+	var bins Bins
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.Fatalf("Failed to open config file: %v", err)
+	}
+	if err := codec.Decode(file, &bins); err != nil {
+		log.Fatalf("Failed to load bins from config file: %v", err)
+	}
+	return bins
+}
+
 // Cmd configures the parameters needed for running rotor against a V2
 // envoy CDS server, over JSON or GRPC.
 func Cmd(updaterFlags rotor.UpdaterFromFlags) *command.Cmd {
@@ -56,15 +87,12 @@ func Cmd(updaterFlags rotor.UpdaterFromFlags) *command.Cmd {
 		format:       tbnflag.NewChoice("grpc", "json").WithDefault("grpc"),
 	}
 
-	//flags.HostPortVar(
-	//	&addrs,
-	//	"addr",
-	//	tbnflag.HostPort{},
-	//	usage.Required("The address ('host:port') of a running CDS server."),
-	//)
-
-	r.addr = append(r.addr, tbnflag.NewHostPort("172.22.8.120:50003"), tbnflag.NewHostPort("172.22.8.120:50001"))
-	//r.addr = append(r.addr, tbnflag.NewHostPort("10.0.17.66:30005"), tbnflag.NewHostPort("10.0.19.13:30005"))
+	flags.StringVar(
+		&r.configFile,
+		"config",
+		"gds_config.yaml",
+		usage.Required("Global Discovery Service config file name."),
+	)
 
 	flags.Var(&r.format, "format", "Format of CDS being called.")
 
@@ -75,7 +103,7 @@ func Cmd(updaterFlags rotor.UpdaterFromFlags) *command.Cmd {
 
 type runner struct {
 	updaterFlags rotor.UpdaterFromFlags
-	addr         []tbnflag.HostPort
+	configFile   string
 	format       tbnflag.Choice
 }
 
@@ -101,6 +129,8 @@ func mergeClusters(accumulator, newData []api.Cluster)  []api.Cluster {
 }
 
 func (r *runner) Run(cmd *command.Cmd, args []string) command.CmdErr {
+	bins := readConfig(r.configFile)
+
 	if err := r.updaterFlags.Validate(); err != nil {
 		return cmd.BadInput(err)
 	}
@@ -112,9 +142,9 @@ func (r *runner) Run(cmd *command.Cmd, args []string) command.CmdErr {
 
 	isJSON := r.format.String() == "json"
 
-	collectors := make([]collector.ClusterCollector, len(r.addr))
-	for i, addr := range r.addr {
-		curCollector, err := adapter.NewClusterCollector(addr, u.ZoneName(), isJSON, fmt.Sprintf("%d", i))
+	collectors := make([]collector.ClusterCollector, len(bins))
+	for i, bin := range bins {
+		curCollector, err := adapter.NewClusterCollector(tbnflag.NewHostPort(bin.Addr()), u.ZoneName(), isJSON, bin.BinId)
 		if err != nil {
 			return cmd.Error(err)
 		}

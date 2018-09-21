@@ -1,0 +1,6 @@
+- binId: bin1
+  host: 172.22.8.120
+  port: 50003
+- binId: bin2
+  host: 172.22.8.120
+  port: 50001
