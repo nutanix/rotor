@@ -42,7 +42,7 @@ func newGRPCClusterService(hostPortStr string) (clusterService, error) {
 }
 
 // newGRPCEndpointService returns a endpointService backed by a GRPC EDS Server
-func newGRPCEndpointService(hostPortStr string) (clusterService, error) {
+func newGRPCEndpointService(hostPortStr string) (endpointService, error) {
 	conn, err := mkConnection(hostPortStr)
 	if err != nil {
 		return nil, err

@@ -17,6 +17,7 @@ limitations under the License.
 package adapter
 
 import (
+	"github.com/turbinelabs/nonstdlib/flag"
 	"io"
 
 	envoyapi "github.com/envoyproxy/go-control-plane/envoy/api/v2"
@@ -36,16 +37,16 @@ type clusterCollector struct {
 // NewClusterCollector produces a ClusterCollector which connects to a CDS
 // server on the given addr, and collects clusters for the given zone name. If
 // isJSON is true, the JSON/REST transport will be used instead of gRPC.
-func NewClusterCollector(addr, zoneName string, isJSON bool) (collector.ClusterCollector, error) {
+func NewClusterCollector(addr flag.HostPort, zoneName string, isJSON bool, binId string) (collector.ClusterCollector, error) {
 	var (
 		cs  clusterService
 		err error
 	)
 
 	if isJSON {
-		cs = newRESTClusterService(addr)
+		cs = newRESTClusterService(addr.Addr())
 	} else {
-		cs, err = newGRPCClusterService(addr)
+		cs, err = newGRPCClusterService(addr.Addr())
 		if err != nil {
 			return nil, err
 		}
@@ -59,12 +60,14 @@ func NewClusterCollector(addr, zoneName string, isJSON bool) (collector.ClusterC
 		}
 	}
 
+	host, port := addr.ParsedHostPort()
+
 	return clusterCollector{
 		Closer: cs,
 		fetchFn: func() ([]*envoyapi.Cluster, error) {
 			return fetchClusters(cs, requestFactory())
 		},
-		transformFn: newClusterTransformer(requestFactory),
+		transformFn: newClusterTransformer(requestFactory, api.Instance{Host: host, Port: port}, binId),
 	}, nil
 }
 

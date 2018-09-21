@@ -18,12 +18,13 @@ package v2
 
 import (
 	"errors"
+	"fmt"
+	"github.com/turbinelabs/rotor/xds/collector"
 	"strings"
 
 	"github.com/turbinelabs/api"
 	"github.com/turbinelabs/cli/command"
 	tbnflag "github.com/turbinelabs/nonstdlib/flag"
-	"github.com/turbinelabs/nonstdlib/flag/usage"
 	"github.com/turbinelabs/rotor"
 	"github.com/turbinelabs/rotor/updater"
 	"github.com/turbinelabs/rotor/xds/adapter"
@@ -55,12 +56,15 @@ func Cmd(updaterFlags rotor.UpdaterFromFlags) *command.Cmd {
 		format:       tbnflag.NewChoice("grpc", "json").WithDefault("grpc"),
 	}
 
-	flags.HostPortVar(
-		&r.addr,
-		"addr",
-		tbnflag.HostPort{},
-		usage.Required("The address ('host:port') of a running CDS server."),
-	)
+	//flags.HostPortVar(
+	//	&addrs,
+	//	"addr",
+	//	tbnflag.HostPort{},
+	//	usage.Required("The address ('host:port') of a running CDS server."),
+	//)
+
+	r.addr = append(r.addr, tbnflag.NewHostPort("172.22.8.120:50003"), tbnflag.NewHostPort("172.22.8.120:50001"))
+	//r.addr = append(r.addr, tbnflag.NewHostPort("10.0.17.66:30005"), tbnflag.NewHostPort("10.0.19.13:30005"))
 
 	flags.Var(&r.format, "format", "Format of CDS being called.")
 
@@ -71,8 +75,29 @@ func Cmd(updaterFlags rotor.UpdaterFromFlags) *command.Cmd {
 
 type runner struct {
 	updaterFlags rotor.UpdaterFromFlags
-	addr         tbnflag.HostPort
+	addr         []tbnflag.HostPort
 	format       tbnflag.Choice
+}
+
+func mergeClusters(accumulator, newData []api.Cluster)  []api.Cluster {
+	duplicate := make([]bool, len(newData))
+	for i, baseItem := range accumulator {
+		for j, newItem := range newData {
+			if baseItem.Name == newItem.Name {
+				accumulator[i].Instances = append(baseItem.Instances, newItem.Instances...)
+				duplicate[j] = true
+				break
+			}
+		}
+	}
+
+	for i := range duplicate {
+		if !duplicate[i] {
+			accumulator = append(accumulator, newData[i])
+		}
+	}
+
+	return accumulator
 }
 
 func (r *runner) Run(cmd *command.Cmd, args []string) command.CmdErr {
@@ -86,18 +111,27 @@ func (r *runner) Run(cmd *command.Cmd, args []string) command.CmdErr {
 	}
 
 	isJSON := r.format.String() == "json"
-	collector, err := adapter.NewClusterCollector(r.addr.Addr(), u.ZoneName(), isJSON)
-	if err != nil {
-		return cmd.Error(err)
+
+	collectors := make([]collector.ClusterCollector, len(r.addr))
+	for i, addr := range r.addr {
+		curCollector, err := adapter.NewClusterCollector(addr, u.ZoneName(), isJSON, fmt.Sprintf("%d", i))
+		if err != nil {
+			return cmd.Error(err)
+		}
+		collectors[i] = curCollector
+		defer collectors[i].Close()
 	}
-	defer collector.Close()
 
 	updater.Loop(
 		u,
 		func() ([]api.Cluster, error) {
-			tbnClusters, errMap := collector.Collect()
-			if len(errMap) > 0 {
-				return nil, mkError(errMap)
+			tbnClusters := make([]api.Cluster, 0)
+			for _, curCollector := range collectors {
+				tmpClusters, errMap := curCollector.Collect()
+				if len(errMap) > 0 {
+					return nil, mkError(errMap)
+				}
+				tbnClusters = mergeClusters(tbnClusters, tmpClusters)
 			}
 
 			if len(tbnClusters) == 0 {
