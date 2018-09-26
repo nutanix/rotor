@@ -32,6 +32,7 @@ type standaloneDiffer struct {
 	consumer  poller.Consumer
 	proxyName string
 	zoneName  string
+	metadataKey string
 }
 
 // NewStandalone produces a function that will create a Differ from a
@@ -39,7 +40,8 @@ type standaloneDiffer struct {
 func NewStandalone(
 	port int,
 	proxyName,
-	zoneName string,
+	zoneName,
+	metadataKey string,
 ) (func(poller.Consumer) Differ, poller.Registrar) {
 	return func(consumer poller.Consumer) Differ {
 		return standaloneDiffer{
@@ -47,6 +49,7 @@ func NewStandalone(
 			consumer:  consumer,
 			proxyName: proxyName,
 			zoneName:  zoneName,
+			metadataKey: metadataKey,
 		}
 	}, poller.NewNopRegistrar()
 }
@@ -97,7 +100,7 @@ func (d standaloneDiffer) Patch(diffs []Diff) error {
 					Light: api.ClusterConstraints{
 						{
 							ClusterKey: ck,
-							Metadata: api.Metadata{api.Metadatum{Key: "binId"}},
+							Metadata: api.Metadata{api.Metadatum{Key: d.metadataKey}},
 							Weight:  1,
 						},
 					},

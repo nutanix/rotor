@@ -36,7 +36,8 @@ type FromFlags interface {
 	MakeStandalone(
 		port int,
 		proxyName,
-		zoneName string,
+		zoneName,
+		metadataKey string,
 	) (func(poller.Consumer) Updater, poller.Registrar)
 }
 
@@ -114,9 +115,10 @@ func (ff *fromFlags) Make(svc service.All, zone api.Zone) Updater {
 func (ff *fromFlags) MakeStandalone(
 	port int,
 	proxyName,
-	zoneName string,
+	zoneName,
+	metadataKey string,
 ) (func(poller.Consumer) Updater, poller.Registrar) {
-	newDiffer, reg := differ.NewStandalone(port, proxyName, zoneName)
+	newDiffer, reg := differ.NewStandalone(port, proxyName, zoneName, metadataKey)
 	return func(consumer poller.Consumer) Updater {
 		return New(newDiffer(consumer), ff.delay, *ff.diffOpts, "")
 	}, reg

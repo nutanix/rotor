@@ -126,6 +126,13 @@ func NewUpdaterFromFlags(flagset tbnflag.FlagSet) UpdaterFromFlags {
 		"Disables the xDS listener.",
 	)
 
+	xdsFlagset.StringVar(
+		&ff.standaloneMetadataKey,
+		"standalone-metadata-key",
+		"",
+		"The metadata key which is used for subset load balancing",
+	)
+
 	xdsFlagset.IntVar(
 		&ff.standalonePort,
 		"standalone-port",
@@ -162,6 +169,7 @@ type updaterFromFlags struct {
 	xdsFromFlags        adapter.XDSFromFlags
 	pollerFromFlags     poller.FromFlags
 	statsFromFlags      stats.FromFlags
+	standaloneMetadataKey string
 	standalonePort      int
 	standaloneProxyName string
 	standaloneZoneName  string
@@ -279,6 +287,7 @@ func (ff *updaterFromFlags) Make() (updater.Updater, error) {
 			ff.standalonePort,
 			ff.standaloneProxyName,
 			ff.standaloneZoneName,
+			ff.standaloneMetadataKey,
 		)
 
 		var err error
