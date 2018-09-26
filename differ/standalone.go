@@ -97,7 +97,8 @@ func (d standaloneDiffer) Patch(diffs []Diff) error {
 					Light: api.ClusterConstraints{
 						{
 							ClusterKey: ck,
-							Weight:     1,
+							Metadata: api.Metadata{api.Metadatum{Key: "binId"}},
+							Weight:  1,
 						},
 					},
 				},
