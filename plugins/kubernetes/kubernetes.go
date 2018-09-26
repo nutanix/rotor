@@ -165,11 +165,11 @@ func (r *kubernetesRunner) Run(cmd *command.Cmd, args []string) command.CmdErr {
 		labelSelector:        labelSelector,
 	}
 
-	clientPods := c.k8sClient.Core().Pods(c.namespace)
+	clinetServices := c.k8sClient.Core().Services(c.namespace)
 	updater.Loop(
 		u,
 		func() ([]api.Cluster, error) {
-			return c.getClusters(clientPods)
+			return c.getClusters(clinetServices)
 		},
 	)
 
@@ -191,7 +191,7 @@ func (c *kubernetesCollector) debug() *log.Logger {
 	return c.debugLog
 }
 
-func (c *kubernetesCollector) getClusters(client k8stypedv1.PodInterface) (api.Clusters, error) {
+func (c *kubernetesCollector) getClusters(client k8stypedv1.ServiceInterface) (api.Clusters, error) {
 	timeout := int64(math.Max(c.timeout.Seconds(), 1.0))
 	listOptions := k8smetav1.ListOptions{
 		LabelSelector:  c.labelSelector.String(),
@@ -204,8 +204,8 @@ func (c *kubernetesCollector) getClusters(client k8stypedv1.PodInterface) (api.C
 	}
 
 	clustersMap := map[string]*api.Cluster{}
-	for _, pod := range list.Items {
-		c.handlePod(clustersMap, pod)
+	for _, service := range list.Items {
+		c.handleService(clustersMap, service)
 	}
 
 	clusters := make(api.Clusters, 0, len(clustersMap))
@@ -216,21 +216,21 @@ func (c *kubernetesCollector) getClusters(client k8stypedv1.PodInterface) (api.C
 	return clusters, nil
 }
 
-func (c *kubernetesCollector) makeInstance(pod k8sapiv1.Pod, port int) (string, api.Instance) {
-	host := pod.Status.PodIP
-	lbls := pod.GetLabels()
-	ans := pod.GetAnnotations()
+func (c *kubernetesCollector) makeInstance(service k8sapiv1.Service, port int) (string, api.Instance) {
+	host := service.Spec.ClusterIP
+	lbls := service.GetLabels()
+	ans := service.GetAnnotations()
 
 	clusterName := lbls[c.clusterNameLabel]
 	if clusterName == "" {
-		c.debug().Printf(`Skipped pod "%s.%s": missing/empty cluster label`, pod.Namespace, pod.Name)
+		c.debug().Printf(`Skipped service "%s.%s": missing/empty cluster label`, service.Namespace, service.Name)
 		return "", api.Instance{}
 	}
 
 	c.debug().Printf(
 		`Adding pod "%s.%s" (%s:%d) in Cluster %s`,
-		pod.Namespace,
-		pod.Name,
+		service.Namespace,
+		service.Name,
 		host,
 		port,
 		clusterName,
@@ -247,14 +247,6 @@ func (c *kubernetesCollector) makeInstance(pod k8sapiv1.Pod, port int) (string, 
 		if !strings.HasPrefix(key, k8sMetadataPrefix) {
 			metadata = append(metadata, api.Metadatum{Key: key, Value: value})
 		}
-	}
-
-	if pod.Status.HostIP != "" {
-		metadata = append(metadata, api.Metadatum{Key: HostIPLabel, Value: pod.Status.HostIP})
-	}
-
-	if pod.Spec.NodeName != "" {
-		metadata = append(metadata, api.Metadatum{Key: NodeNameLabel, Value: pod.Spec.NodeName})
 	}
 
 	return clusterName, api.Instance{
@@ -278,29 +270,30 @@ func (c *kubernetesCollector) isContainerRunning(pod k8sapiv1.Pod) bool {
 	return true
 }
 
-func (c *kubernetesCollector) findContainerPort(pod k8sapiv1.Pod) *int {
-	for _, container := range pod.Spec.Containers {
-		for _, port := range container.Ports {
-			if port.Protocol == k8sapiv1.ProtocolTCP {
-				if c.portName == "" {
-					c.debug().Printf(
-						`Adding port %d on pod "%s.%s", because it was the first port encountered and --port-name is empty. To use a named port, set --port-name`,
-						port.ContainerPort,
-						pod.Namespace,
-						pod.Name,
-					)
-					return ptr.Int(int(port.ContainerPort))
-				}
-				if port.Name == c.portName {
-					c.debug().Printf(
-						`Adding named port %s:%d on pod "%s.%s". To use a different named port, set --port-name.`,
-						c.portName,
-						port.ContainerPort,
-						pod.Namespace,
-						pod.Name,
-					)
-					return ptr.Int(int(port.ContainerPort))
-				}
+func (c *kubernetesCollector) findContainerPort(service k8sapiv1.Service) *int {
+	if service.Spec.Type != k8sapiv1.ServiceTypeNodePort {
+		return nil
+	}
+	for _, port := range service.Spec.Ports {
+		if port.Protocol == k8sapiv1.ProtocolTCP {
+			if c.portName == "" {
+				c.debug().Printf(
+					`Adding port %d on service "%s.%s", because it was the first port encountered and --port-name is empty. To use a named port, set --port-name`,
+					port.NodePort,
+					service.Namespace,
+					service.Name,
+				)
+				return ptr.Int(int(port.NodePort))
+			}
+			if port.Name == c.portName {
+				c.debug().Printf(
+					`Adding named port %s:%d on service "%s.%s". To use a different named port, set --port-name.`,
+					c.portName,
+					port.NodePort,
+					service.Namespace,
+					service.Name,
+				)
+				return ptr.Int(int(port.NodePort))
 			}
 		}
 	}
@@ -308,50 +301,41 @@ func (c *kubernetesCollector) findContainerPort(pod k8sapiv1.Pod) *int {
 	return nil
 }
 
-func (c *kubernetesCollector) handlePod(clusters map[string]*api.Cluster, pod k8sapiv1.Pod) {
-	port := c.findContainerPort(pod)
-	if port == nil {
-		if c.portName == "" {
-			c.debug().Printf(
-				`Ignoring pod "%s.%s", because it exposes no ports`,
-				pod.Namespace,
-				pod.Name,
-			)
-		} else {
-			// port may be unassigned at startup or shutdown, ignore its absence
-			c.debug().Printf(
-				`Ignoring pod "%s.%s", because it has no port named %q (can be configured with --port-name).`,
-				pod.Namespace,
-				pod.Name,
-				c.portName,
-			)
+func (c *kubernetesCollector) handleService(clusters map[string]*api.Cluster, service k8sapiv1.Service) {
+	if len(service.Spec.ExternalIPs) > 0 {
+		clusterName := service.Labels[c.clusterNameLabel]
+
+		cluster := clusters[clusterName]
+		if cluster == nil {
+			cluster = &api.Cluster{
+				Name:      clusterName,
+				Instances: []api.Instance{},
+			}
+			clusters[clusterName] = cluster
 		}
-		return
-	}
 
-	if !c.isContainerRunning(pod) {
-		c.debug().Printf(
-			`Ignoring pod "%s.%s", because it has at least one non-running container.`,
-			pod.Namespace,
-			pod.Name,
-		)
-		return
-	}
+		metadata := api.Metadata{}
 
-	clusterName, instance := c.makeInstance(pod, *port)
-
-	if clusterName == "" {
-		return
-	}
-
-	cluster := clusters[clusterName]
-	if cluster == nil {
-		cluster = &api.Cluster{
-			Name:      clusterName,
-			Instances: []api.Instance{},
+		for key, value := range service.Labels {
+			if key != c.clusterNameLabel {
+				metadata = append(metadata, api.Metadatum{Key: key, Value: value})
+			}
 		}
-		clusters[clusterName] = cluster
-	}
 
-	cluster.Instances = append(cluster.Instances, instance)
+		for key, value := range service.Annotations {
+			if !strings.HasPrefix(key, k8sMetadataPrefix) {
+				metadata = append(metadata, api.Metadatum{Key: key, Value: value})
+			}
+		}
+
+		for _, external_ip := range service.Spec.ExternalIPs {
+			for _, port := range service.Spec.Ports {
+				cluster.Instances = append(cluster.Instances, api.Instance{
+					Host:     external_ip,
+					Port:     int(port.Port),
+					Metadata: metadata,
+				})
+			}
+		}
+	}
 }
