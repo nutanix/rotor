@@ -93,6 +93,7 @@ func mkEnvoyLbEndpoint(host string, port int, metadata tbnapi.Metadata) envoyend
 
 func envoyEndpointsToTbnInstances(
 	lles []envoyendpoint.LocalityLbEndpoints,
+	binId string,
 ) (tbnapi.Instances, []error) {
 	if len(lles) == 0 {
 		return tbnapi.Instances{}, nil
@@ -103,6 +104,10 @@ func envoyEndpointsToTbnInstances(
 	for _, lle := range lles {
 		for _, le := range lle.GetLbEndpoints() {
 			i, err := envoyEndpointToTbnInstance(le)
+			i.Metadata = append(i.Metadata, tbnapi.Metadatum{
+				Key:   "binId",
+				Value: binId,
+			})
 			if err != nil {
 				fmtErr := fmt.Errorf(
 					"Error making instances for endpoint %s: %s",

@@ -75,7 +75,7 @@ func fetchClusters(
 	return clusters, nil
 }
 
-func asClusterResolver(es endpointService, rf requestFactory) collector.ClusterResolver {
+func asClusterResolver(es endpointService, rf requestFactory, binId string) collector.ClusterResolver {
 	return func(n string) (api.Instances, []error) {
 		var req *envoyapi.DiscoveryRequest
 		if rf == nil {
@@ -107,6 +107,6 @@ func asClusterResolver(es endpointService, rf requestFactory) collector.ClusterR
 			}
 		}
 
-		return envoyEndpointsToTbnInstances(cla.GetEndpoints())
+		return envoyEndpointsToTbnInstances(cla.GetEndpoints(), binId)
 	}
 }

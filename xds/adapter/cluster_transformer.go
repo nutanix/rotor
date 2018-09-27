@@ -44,15 +44,10 @@ type (
 // newClusterTransformer returns a ClusterTransformer that will resolve
 // correspondent clusters and instances, using the DiscoveryRequest thunk to
 // issue requests to a V1 SDS or V2 EDS server, if necessary.
-func newClusterTransformer(rf func() *envoyapi.DiscoveryRequest) clusterTransformer {
-	dynamicTransformer := func(
-		c *envoyapi.Cluster,
-		cm map[string]*envoyapi.Cluster,
-	) (*api.Cluster, []error) {
-		mkClusterResolver := func(
-			cs *envoycore.ConfigSource,
-		) (collector.ClusterResolver, error) {
-			return newClusterResolver(cs, rf, cm, collector.RandomInstanceSelector)
+func newClusterTransformer(rf func() *envoyapi.DiscoveryRequest, edsInstance api.Instance, binId string) clusterTransformer {
+	dynamicTransformer := func(c *envoyapi.Cluster, cm map[string]*envoyapi.Cluster) (*api.Cluster, []error) {
+		mkClusterResolver := func(cs *envoycore.ConfigSource) (collector.ClusterResolver, error) {
+			return newClusterResolver(cs, rf, edsInstance, binId)
 		}
 
 		return mkDynamicCluster(c, mkClusterResolver)
@@ -191,8 +186,8 @@ func mkDynamicCluster(
 func newClusterResolver(
 	configSource *envoycore.ConfigSource,
 	rf func() *envoyapi.DiscoveryRequest,
-	clusterMap map[string]*envoyapi.Cluster,
-	selector func(api.Instances) api.Instance,
+	edsInstance api.Instance,
+	binId string,
 ) (collector.ClusterResolver, error) {
 	if configSource.GetApiConfigSource() == nil {
 		return nil, fmt.Errorf(
@@ -202,22 +197,17 @@ func newClusterResolver(
 	}
 
 	acs := configSource.GetApiConfigSource()
-	clusterNames, err := resolveClusterNames(acs)
-	if err != nil {
-		return nil, err
-	}
+	//clusterNames, err := resolveClusterNames(acs)
 
-	i, err := resolveEDSInstance(clusterNames, selector, clusterMap)
-	if err != nil {
-		return nil, err
-	}
+	//i, err := resolveEDSInstance(clusterNames, selector, clusterMap)
+	i := edsInstance
 
 	switch acs.GetApiType() {
 	case envoycore.ApiConfigSource_REST_LEGACY:
 		return v1.NewClusterResolver(i.Host, i.Port, http.DefaultClient.Get), nil
 
 	case envoycore.ApiConfigSource_REST:
-		return asClusterResolver(newRESTEndpointService(i.Key()), rf), nil
+		return asClusterResolver(newRESTEndpointService(i.Key()), rf, binId), nil
 
 	case envoycore.ApiConfigSource_GRPC:
 		es, err := newGRPCEndpointService(i.Key())
@@ -225,7 +215,7 @@ func newClusterResolver(
 			return nil, err
 		}
 
-		return asClusterResolver(es, rf), nil
+		return asClusterResolver(es, rf, binId), nil
 	}
 
 	return nil, fmt.Errorf("Unrecognized ApiConfigSourceType: %s", acs.GetApiType().String())

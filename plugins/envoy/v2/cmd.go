@@ -18,12 +18,17 @@ package v2
 
 import (
 	"errors"
+	"fmt"
+	"github.com/turbinelabs/codec"
+	"github.com/turbinelabs/nonstdlib/flag/usage"
+	"github.com/turbinelabs/rotor/xds/collector"
+	"log"
+	"os"
 	"strings"
 
 	"github.com/turbinelabs/api"
 	"github.com/turbinelabs/cli/command"
 	tbnflag "github.com/turbinelabs/nonstdlib/flag"
-	"github.com/turbinelabs/nonstdlib/flag/usage"
 	"github.com/turbinelabs/rotor"
 	"github.com/turbinelabs/rotor/updater"
 	"github.com/turbinelabs/rotor/xds/adapter"
@@ -37,6 +42,33 @@ Depending on parameters, uses JSON or GRPC to load clusters and will use
 results to resolve corresponding instances statically or via configured v2 EDS or
  v1 SDS servers that are provided in CDS results.
 `
+
+type Bin struct {
+	BinId string	`json:"binid"`
+	Host string		`json:"host"`
+	Port int		`json:"port"`
+}
+
+func (b *Bin) Addr() string {
+	return fmt.Sprintf("%s:%d", b.Host, b.Port)
+}
+
+type Bins []Bin
+
+func readConfig(filePath string) Bins {
+	codec := codec.NewYaml()
+
+	var bins Bins
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.Fatalf("Failed to open config file: %v", err)
+	}
+	if err := codec.Decode(file, &bins); err != nil {
+		log.Fatalf("Failed to load bins from config file: %v", err)
+	}
+	return bins
+}
 
 // Cmd configures the parameters needed for running rotor against a V2
 // envoy CDS server, over JSON or GRPC.
@@ -55,11 +87,11 @@ func Cmd(updaterFlags rotor.UpdaterFromFlags) *command.Cmd {
 		format:       tbnflag.NewChoice("grpc", "json").WithDefault("grpc"),
 	}
 
-	flags.HostPortVar(
-		&r.addr,
-		"addr",
-		tbnflag.HostPort{},
-		usage.Required("The address ('host:port') of a running CDS server."),
+	flags.StringVar(
+		&r.configFile,
+		"config",
+		"gds_config.yaml",
+		usage.Required("Global Discovery Service config file name."),
 	)
 
 	flags.Var(&r.format, "format", "Format of CDS being called.")
@@ -71,11 +103,34 @@ func Cmd(updaterFlags rotor.UpdaterFromFlags) *command.Cmd {
 
 type runner struct {
 	updaterFlags rotor.UpdaterFromFlags
-	addr         tbnflag.HostPort
+	configFile   string
 	format       tbnflag.Choice
 }
 
+func mergeClusters(accumulator, newData []api.Cluster)  []api.Cluster {
+	duplicate := make([]bool, len(newData))
+	for i, baseItem := range accumulator {
+		for j, newItem := range newData {
+			if baseItem.Name == newItem.Name {
+				accumulator[i].Instances = append(baseItem.Instances, newItem.Instances...)
+				duplicate[j] = true
+				break
+			}
+		}
+	}
+
+	for i := range duplicate {
+		if !duplicate[i] {
+			accumulator = append(accumulator, newData[i])
+		}
+	}
+
+	return accumulator
+}
+
 func (r *runner) Run(cmd *command.Cmd, args []string) command.CmdErr {
+	bins := readConfig(r.configFile)
+
 	if err := r.updaterFlags.Validate(); err != nil {
 		return cmd.BadInput(err)
 	}
@@ -86,18 +141,27 @@ func (r *runner) Run(cmd *command.Cmd, args []string) command.CmdErr {
 	}
 
 	isJSON := r.format.String() == "json"
-	collector, err := adapter.NewClusterCollector(r.addr.Addr(), u.ZoneName(), isJSON)
-	if err != nil {
-		return cmd.Error(err)
+
+	collectors := make([]collector.ClusterCollector, len(bins))
+	for i, bin := range bins {
+		curCollector, err := adapter.NewClusterCollector(tbnflag.NewHostPort(bin.Addr()), u.ZoneName(), isJSON, bin.BinId)
+		if err != nil {
+			return cmd.Error(err)
+		}
+		collectors[i] = curCollector
+		defer collectors[i].Close()
 	}
-	defer collector.Close()
 
 	updater.Loop(
 		u,
 		func() ([]api.Cluster, error) {
-			tbnClusters, errMap := collector.Collect()
-			if len(errMap) > 0 {
-				return nil, mkError(errMap)
+			tbnClusters := make([]api.Cluster, 0)
+			for _, curCollector := range collectors {
+				tmpClusters, errMap := curCollector.Collect()
+				if len(errMap) > 0 {
+					return nil, mkError(errMap)
+				}
+				tbnClusters = mergeClusters(tbnClusters, tmpClusters)
 			}
 
 			if len(tbnClusters) == 0 {
